@@ -1,0 +1,350 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>实时聊天室</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #f0f2f5;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+      padding: 16px;
+    }
+    .chat-container {
+      width: 100%;
+      max-width: 640px;
+      height: 80vh;
+      background: #fff;
+      border-radius: 12px;
+      box-shadow: 0 4px 24px rgba(0,0,0,0.1);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+    .chat-header {
+      padding: 14px 18px;
+      background: #2563eb;
+      color: #fff;
+      font-weight: 600;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .status { font-size: 12px; opacity: 0.85; font-weight: 400; }
+    .status.online::before { content: "●"; color: #4ade80; margin-right: 4px; }
+    .status.offline::before { content: "●"; color: #f87171; margin-right: 4px; }
+
+    #messages {
+      flex: 1;
+      overflow-y: auto;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      background: #f9fafb;
+    }
+    .msg {
+      max-width: 75%;
+      padding: 8px 12px;
+      border-radius: 12px;
+      font-size: 14px;
+      line-height: 1.4;
+      word-break: break-word;
+    }
+    .msg .meta {
+      display: block;
+      font-size: 11px;
+      opacity: 0.6;
+      margin-bottom: 2px;
+    }
+    .msg.self {
+      align-self: flex-end;
+      background: #2563eb;
+      color: #fff;
+    }
+    .msg.other {
+      align-self: flex-start;
+      background: #e5e7eb;
+      color: #111;
+    }
+    .msg.system {
+      align-self: center;
+      background: transparent;
+      color: #6b7280;
+      font-size: 12px;
+      font-style: italic;
+    }
+
+    #typing-indicator {
+      height: 20px;
+      padding: 0 16px;
+      font-size: 12px;
+      color: #6b7280;
+      font-style: italic;
+      background: #f9fafb;
+    }
+
+    .chat-input {
+      display: flex;
+      padding: 12px;
+      gap: 8px;
+      border-top: 1px solid #e5e7eb;
+      background: #fff;
+    }
+    .chat-input input {
+      flex: 1;
+      padding: 10px 14px;
+      border: 1px solid #d1d5db;
+      border-radius: 20px;
+      font-size: 14px;
+      outline: none;
+    }
+    .chat-input input:focus { border-color: #2563eb; }
+    .chat-input button {
+      padding: 10px 20px;
+      background: #2563eb;
+      color: #fff;
+      border: none;
+      border-radius: 20px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    .chat-input button:disabled { background: #9ca3af; cursor: not-allowed; }
+
+    .join-box {
+      padding: 24px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .join-box input {
+      padding: 10px 14px;
+      border: 1px solid #d1d5db;
+      border-radius: 8px;
+      font-size: 14px;
+    }
+    .join-box button {
+      padding: 10px;
+      background: #2563eb;
+      color: #fff;
+      border: none;
+      border-radius: 8px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+
+<div class="chat-container">
+  <!-- 加入界面 -->
+  <div id="join-box" class="join-box">
+    <h2 style="font-size:18px;">加入聊天室</h2>
+    <input id="name-input" placeholder="你的昵称" maxlength="20" />
+    <input id="room-input" placeholder="房间 ID（如：general）" value="general" />
+    <button id="join-btn">进入</button>
+  </div>
+
+  <!-- 聊天界面 -->
+  <div id="chat-box" class="hidden" style="display:flex;flex-direction:column;flex:1;overflow:hidden;">
+    <div class="chat-header">
+      <span id="room-title">聊天室</span>
+      <span id="status" class="status offline">连接中…</span>
+    </div>
+    <div id="messages"></div>
+    <div id="typing-indicator"></div>
+    <div class="chat-input">
+      <input id="msg-input" placeholder="输入消息…" autocomplete="off" disabled />
+      <button id="send-btn" disabled>发送</button>
+    </div>
+  </div>
+</div>
+
+<script>
+  // ============================================
+  // ⚠️ 唯一需要修改的地方：替换成你部署的 Worker 地址
+  // ============================================
+  const WORKER_BASE = 'wss://barg-chatting-room.hakunhuixing.workers.dev';
+  // 例如：'wss://durable-chat-template.username.workers.dev'
+
+  // ---------- DOM 引用 ----------
+  const joinBox = document.getElementById('join-box');
+  const chatBox = document.getElementById('chat-box');
+  const nameInput = document.getElementById('name-input');
+  const roomInput = document.getElementById('room-input');
+  const joinBtn = document.getElementById('join-btn');
+  const messagesEl = document.getElementById('messages');
+  const msgInput = document.getElementById('msg-input');
+  const sendBtn = document.getElementById('send-btn');
+  const statusEl = document.getElementById('status');
+  const roomTitle = document.getElementById('room-title');
+  const typingIndicator = document.getElementById('typing-indicator');
+
+  // ---------- 状态 ----------
+  let socket = null;
+  let myName = '';
+  let myRoom = '';
+  let reconnectTimer = null;
+  let typingSendTimer = null;
+  let typingStopTimer = null;
+  let typingDisplayTimer = null;
+  const TYPING_SEND_INTERVAL = 2000; // 每 2 秒发一次 typing 心跳
+  const TYPING_STOP_DELAY = 1000;    // 停止输入 1 秒后发 stop
+  const TYPING_DISPLAY_TIMEOUT = 4000; // 接收端 4 秒兜底隐藏
+
+  // ---------- 加入聊天室 ----------
+  joinBtn.addEventListener('click', () => {
+    const name = nameInput.value.trim();
+    const room = roomInput.value.trim() || 'general';
+    if (!name) { alert('请输入昵称'); return; }
+    myName = name;
+    myRoom = room;
+    joinBox.classList.add('hidden');
+    chatBox.classList.remove('hidden');
+    roomTitle.textContent = `聊天室：${room}`;
+    connect();
+  });
+
+  // 回车也能加入
+  nameInput.addEventListener('keydown', e => { if (e.key === 'Enter') joinBtn.click(); });
+
+  // ---------- 建立 WebSocket 连接 ----------
+  function connect() {
+    if (socket) { try { socket.close(); } catch(e){} }
+
+    statusEl.textContent = '连接中…';
+    statusEl.className = 'status offline';
+    msgInput.disabled = true;
+    sendBtn.disabled = true;
+
+    const url = `${WORKER_BASE}/room/${encodeURIComponent(myRoom)}?name=${encodeURIComponent(myName)}`;
+    socket = new WebSocket(url);
+
+    socket.addEventListener('open', () => {
+      statusEl.textContent = '已连接';
+      statusEl.className = 'status online';
+      msgInput.disabled = false;
+      sendBtn.disabled = false;
+      msgInput.focus();
+      clearTimeout(reconnectTimer);
+    });
+
+    socket.addEventListener('message', (event) => {
+      let msg;
+      try { msg = JSON.parse(event.data); } catch(e) { return; }
+      handleIncoming(msg);
+    });
+
+    socket.addEventListener('close', () => {
+      statusEl.textContent = '已断开，重连中…';
+      statusEl.className = 'status offline';
+      msgInput.disabled = true;
+      sendBtn.disabled = true;
+      // 指数退避重连（简化版：3 秒后重连）
+      clearTimeout(reconnectTimer);
+      reconnectTimer = setTimeout(connect, 3000);
+    });
+
+    socket.addEventListener('error', () => {
+      statusEl.textContent = '连接错误';
+      statusEl.className = 'status offline';
+    });
+  }
+
+  // ---------- 处理收到的消息 ----------
+  function handleIncoming(msg) {
+    // 兼容不同模板的消息格式：可能是 {type, text, user} 或 {type, body, name} 等
+    const type = msg.type || 'chat';
+
+    if (type === 'chat') {
+      const sender = msg.user || msg.name || msg.sender || '匿名';
+      const text = msg.text || msg.body || msg.message || '';
+      appendMessage(sender, text, sender === myName ? 'self' : 'other');
+      // 有人发消息了，清掉该用户的 typing 提示
+      clearTypingIndicator();
+    } else if (type === 'typing') {
+      const sender = msg.user || msg.name || '某人';
+      if (sender !== myName) showTypingIndicator(sender);
+    } else if (type === 'stop_typing' || type === 'stop') {
+      clearTypingIndicator();
+    } else if (type === 'system' || type === 'user:join' || type === 'user:leave') {
+      const text = msg.text || msg.message || `${msg.name || '有人'} ${type === 'user:join' ? '加入了' : '离开了'}`;
+      appendMessage('', text, 'system');
+    } else {
+      // 未知类型，尝试当聊天消息渲染
+      if (msg.text) appendMessage(msg.user || '匿名', msg.text, 'other');
+    }
+  }
+
+  // ---------- 渲染消息 ----------
+  function appendMessage(sender, text, kind) {
+    const div = document.createElement('div');
+    div.className = `msg ${kind}`;
+    if (kind !== 'system' && sender) {
+      const meta = document.createElement('span');
+      meta.className = 'meta';
+      meta.textContent = sender;
+      div.appendChild(meta);
+    }
+    div.appendChild(document.createTextNode(text));
+    messagesEl.appendChild(div);
+    messagesEl.scrollTop = messagesEl.scrollHeight;
+  }
+
+  // ---------- 发送消息 ----------
+  function sendMessage() {
+    const text = msgInput.value.trim();
+    if (!text || !socket || socket.readyState !== WebSocket.OPEN) return;
+    // 发送格式：与 Worker 端约定一致
+    socket.send(JSON.stringify({ type: 'chat', user: myName, text }));
+    msgInput.value = '';
+    // 发送后立刻停止 typing 状态
+    stopTyping();
+  }
+
+  sendBtn.addEventListener('click', sendMessage);
+  msgInput.addEventListener('keydown', e => {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  });
+
+  // ---------- 正在输入：发送侧（节流） ----------
+  msgInput.addEventListener('input', () => {
+    if (!socket || socket.readyState !== WebSocket.OPEN) return;
+    // 立即发一次 typing（如果距离上次发送超过间隔）
+    if (!typingSendTimer) {
+      socket.send(JSON.stringify({ type: 'typing', user: myName }));
+      typingSendTimer = setTimeout(() => { typingSendTimer = null; }, TYPING_SEND_INTERVAL);
+    }
+    // 重置“停止输入”定时器
+    clearTimeout(typingStopTimer);
+    typingStopTimer = setTimeout(stopTyping, TYPING_STOP_DELAY);
+  });
+
+  function stopTyping() {
+    clearTimeout(typingStopTimer);
+    typingSendTimer = null;
+    if (socket && socket.readyState === WebSocket.OPEN) {
+      socket.send(JSON.stringify({ type: 'stop_typing', user: myName }));
+    }
+  }
+
+  // ---------- 正在输入：接收侧（显示 + 兜底隐藏） ----------
+  function showTypingIndicator(name) {
+    typingIndicator.textContent = `${name} 正在输入…`;
+    clearTimeout(typingDisplayTimer);
+    typingDisplayTimer = setTimeout(clearTypingIndicator, TYPING_DISPLAY_TIMEOUT);
+  }
+  function clearTypingIndicator() {
+    typingIndicator.textContent = '';
+    clearTimeout(typingDisplayTimer);
+  }
+</script>
+
+</body>
+</html>
